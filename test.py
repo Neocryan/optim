@@ -5,10 +5,11 @@ import logging
 import pickle
 
 # Load price data
-data = pickle.load(open('sample.pkl', 'rb'))
+data = pickle.load(open('sample.pkl', 'rb'))  # a list of ten years data, each year is a list of floats.
 logging.basicConfig(level=logging.INFO)
 
 #### functions:
+
 
 def pfe(close, lookback):
     """
@@ -24,77 +25,14 @@ def pfe(close, lookback):
     assert btm.shape == top.shape, (top.shape, btm.shape)
     return top / btm
 
-
-class BaseOptim:
-    def __init__(self, env):
-        self.env = env
-
-    @staticmethod
-    def optim_range():
-        raise NotImplementedError
-
-    @staticmethod
-    def headers():
-        raise NotImplementedError
-
-    @staticmethod
-    def process(high, low, close, x, *args, **kwargs):
-        pass
-
-    def __call__(self, x: list, test_verify=False):
-        signals = [self.process(None,
-                                None,
-                                self.env.train_close[i],
-                                x) for i in range(len(self.env.train_close))]
-
-        if test_verify:
-            return signals
-
-        return -self.env.train(signals)
-
-
-
-
-class PFEVOptim(BaseOptim):
-
-    @staticmethod
-    def optim_range():
-        return [slice(2, 30, 4),
-               slice(-0.5, 1, 0.3),
-               slice(-1, 1, 0.3),
-                slice(10,70,30),
-                slice(0,0.1,0.03),
-                slice(0,0.8,0.4)]
-
-    @staticmethod
-    def headers():
-        return ['pfe_lookback', 'buypfe', 'sellpfe',
-                'volatility_lookback', 'volatility_threshold',
-                'size_shrink']
-
-    @staticmethod
-    def process(high, low, close, x, *args, **kwargs):
-        pfe_lookback, buypfe, sellpfe = int(x[0]), float(x[1]), float(x[2])
-        volatility_lookback, volatility_threshold = int(x[3]), float(x[4])
-        size_shrink = float(x[5])
-
-        returns = np.diff(close) / close[:-1]
-
-        PFE = pfe(close, pfe_lookback)
-        volatility = np.array(pd.Series(returns).rolling(volatility_lookback).std()) * np.sqrt(252 / volatility_lookback)
-
-        if volatility.shape[0] >= PFE.shape[0]:
-            volatility = volatility[-PFE.shape[0]:]
-        else:
-            PFE = PFE[-volatility.shape[0]:]
-
-        signal_pfe = (PFE > buypfe).astype('int') - (PFE < sellpfe).astype('int')
-        signal_volatility = 1 - (volatility >= volatility_threshold).astype('int') * size_shrink
-
-        return signal_pfe * signal_volatility
+# We make an environment using the 10 year's data to compute the yearly sharpe with the algorithm
 
 
 class DiscreteEnv:
+    # This Environment ingest the 10 year's data (self.__init__),
+    # and given the every day's signal (1 for buy and -1 for sell)
+    # this Environment also calculates the sharpe (self.act)
+
     """
     Class for splitted training-testing data
     :param data: list or array of continuous data
@@ -106,7 +44,7 @@ class DiscreteEnv:
         """
         :param close: list or array of continuous data, each item is a list or ndarray
         """
-
+        # In this sample, we do not split the train test data, bc the test is on a more complicated env
         self.train_size = train_size
         assert len(close) > 1, "expected the data as a list of yearly data, but only find {} years".format(len(close))
 
@@ -116,22 +54,25 @@ class DiscreteEnv:
         if high:
             self.high = []
             self.low = []
+
+        # Padding the data
         for i in range(1, len(close)):
             self.close.append(np.array(close[i - 1][-self.MAX_LOOKBACK:] + close[i]))
             if high:
-                self.high.append(np.array(high[i-1][-self.MAX_LOOKBACK:] + high[i]))  # extend the data from the second year
-                self.low.append(np.array(low[i-1][-self.MAX_LOOKBACK:] + low[i]))  # extend the data from the second year
+                self.high.append(
+                    np.array(high[i - 1][-self.MAX_LOOKBACK:] + high[i]))  # extend the data from the second year
+                self.low.append(
+                    np.array(low[i - 1][-self.MAX_LOOKBACK:] + low[i]))  # extend the data from the second year
 
         # Initial randomly the years to be used
         self.train_index = set(np.random.choice(range(len(self.close)), self.train_size, replace=False))
-        self.test_index = sorted(list(set(range(len(self.close))) - self.train_index))
         self.train_index = sorted(list(self.train_index))
 
         self.train_close = [np.array(self.close[x]) for x in self.train_index]
         if high:
             self.train_high = [np.array(self.high[x]) for x in self.train_index]
             self.train_low = [np.array(self.low[x]) for x in self.train_index]
-        self.train_days = [days[x+1] for x in self.train_index]  # X + 1 is because we ignore the first year
+        self.train_days = [days[x + 1] for x in self.train_index]  # X + 1 is because we ignore the first year
 
     def train(self, signals):
         """
@@ -144,25 +85,7 @@ class DiscreteEnv:
         for i in range(len(signals)):
             total += self.act(self.train_close[i], signals[i])[0]
 
-        return total/len(signals)
-
-    def test(self, signals):
-        """
-        Function for computing sharpe for testing optimization functions's performance
-        :param signals: array-like signals
-        :return:
-        """
-        total = []
-        drawdowns = []
-
-        for i in range(len(signals)):
-            res = self.act([np.array(self.close[x])
-                            for x in self.test_index][i],
-                           signals[i])
-            total.append(res[0])
-            drawdowns.append(res[1])
-
-        return total, sum(total) / len(total), drawdowns
+        return total / len(signals)
 
     def act(self, close, signal):
         """
@@ -186,7 +109,7 @@ class DiscreteEnv:
             index[0] = 100
             # Computing the list of index (portfolio value)
             for i in range(1, index.shape[0]):
-                index[i] = index[i-1] * (1 + returns[i-1])
+                index[i] = index[i - 1] * (1 + returns[i - 1])
 
             # Computing Max Drawdown
             lowest = np.argmax(np.maximum.accumulate(index) - index)
@@ -202,11 +125,66 @@ class DiscreteEnv:
         return sharpe, max_drawdown
 
 
-# Optimaztion
+class PFEVOptim:
+    # This class it the algorithm it self. it is very simple: compute the pfe and volatility
+    # And given the pfe and volatility and their threshold, return the signal to the environment
+    # The objective function is self.__call__, which is the average sharpe ratio of training years
+    def __init__(self, env):
+        self.env = env
 
+    @staticmethod
+    def optim_range():
+        # Optim range for brute optimizing. (start, end, step)
+        return [slice(2, 30, 4),
+               slice(-0.5, 1, 0.3),
+               slice(-1, 1, 0.3),
+                slice(10,70,30),
+                slice(0,0.1,0.03),
+                slice(0,0.8,0.4)]
+
+    @staticmethod
+    def headers():
+        return ['pfe_lookback', 'buypfe', 'sellpfe',
+                'volatility_lookback', 'volatility_threshold',
+                'size_shrink']
+
+    @staticmethod
+    def process(high, low, close, x, *args, **kwargs):
+        # Compute the signal with the algorithm
+        pfe_lookback, buypfe, sellpfe = int(x[0]), float(x[1]), float(x[2])
+        volatility_lookback, volatility_threshold = int(x[3]), float(x[4])
+        size_shrink = float(x[5])
+
+        returns = np.diff(close) / close[:-1]
+
+        PFE = pfe(close, pfe_lookback)
+        volatility = np.array(pd.Series(returns).rolling(volatility_lookback).std()) * np.sqrt(252 / volatility_lookback)
+
+        if volatility.shape[0] >= PFE.shape[0]:
+            volatility = volatility[-PFE.shape[0]:]
+        else:
+            PFE = PFE[-volatility.shape[0]:]
+
+        signal_pfe = (PFE > buypfe).astype('int') - (PFE < sellpfe).astype('int')
+        signal_volatility = 1 - (volatility >= volatility_threshold).astype('int') * size_shrink
+
+        return signal_pfe * signal_volatility
+
+    def __call__(self, x: list):
+        signals = [self.process(None,
+                                None,
+                                self.env.train_close[i],
+                                x) for i in range(len(self.env.train_close))]
+
+
+        return -self.env.train(signals)
+
+
+# Make the environment
 env_optim = DiscreteEnv(data, high=None, low=None, train_size=6)
 obj_func = PFEVOptim(env=env_optim)
 
+# Optimizing
 x = optim.brute(func=obj_func,
                 ranges=obj_func.optim_range(), full_output=True)
 
